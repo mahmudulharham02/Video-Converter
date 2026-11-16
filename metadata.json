@@ -1,0 +1,6 @@
+{
+  "name": "WebFF Video Converter",
+  "description": "Local browser-based video converter powered by FFmpeg.wasm and MediaInfo with independent per-job encoding settings, sequential queue processing, and output verification.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

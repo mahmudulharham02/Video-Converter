@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebFF Video Converter</title>
+    <meta
+      name="description"
+      content="Local browser-based video converter powered by FFmpeg.wasm and MediaInfo with independent per-job encoding settings, sequential queue processing, and output verification."
+    />
+    <meta property="og:title" content="WebFF Video Converter" />
+    <meta
+      property="og:description"
+      content="Local browser-based video converter powered by FFmpeg.wasm and MediaInfo with independent per-job encoding settings, sequential queue processing, and output verification."
+    />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin="anonymous" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@600;700&display=swap"
+      crossorigin="anonymous"
+    />
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <span class="brand-name">WebFF</span>
+          <span class="brand-sep" aria-hidden="true">·</span>
+          <span class="brand-sub">Browser Video Converter</span>
+        </div>
+
+        <div class="topbar-meta" id="engineStatusBar" aria-live="polite">
+          Initializing WebAssembly engine…
+        </div>
+
+        <div class="topbar-actions">
+          <label class="sr-only" for="themeSelect">Color theme</label>
+          <select id="themeSelect" class="select-compact" aria-label="Color theme">
+            <option value="system">Theme: System</option>
+            <option value="light">Theme: Light</option>
+            <option value="dark">Theme: Dark</option>
+          </select>
+        </div>
+      </div>
+    </header>
+
+    <main class="workbench">
+      <!-- Left Panel: File Selection, Inspection & Individual Job Settings -->
+      <section class="panel panel-config" aria-labelledby="configPanelHeading">
+        <div class="panel-header">
+          <div>
+            <h1 id="configPanelHeading" class="panel-title">Configure Video Job</h1>
+            <p class="panel-subtitle">
+              All processing runs locally in your browser. Files are never uploaded.
+            </p>
+          </div>
+          <button
+            type="button"
+            id="reusePrevBtn"
+            class="btn btn-secondary btn-sm"
+            disabled
+            title="Explicitly apply settings from your previous queued job"
+          >
+            Copy Previous Settings
+          </button>
+        </div>
+
+        <div id="browserCapsBanner" class="notice-stack" aria-live="polite"></div>
+
+        <!-- Edit Mode Indicator -->
+        <div id="editJobBanner" class="edit-banner" hidden>
+          <span id="editJobLabel" class="edit-banner-text"></span>
+          <div class="edit-banner-actions">
+            <button type="button" id="cancelEditBtn" class="btn btn-secondary btn-sm">
+              Cancel Edit
+            </button>
+          </div>
+        </div>
+
+        <!-- Step 1: Select File -->
+        <div class="block">
+          <div class="block-header">
+            <h2 class="block-title">1. Source Video</h2>
+            <span class="muted-hint">Select one file at a time</span>
+          </div>
+
+          <div id="dropZone" class="dropzone" tabindex="0" role="button" aria-label="Select or drop a video file">
+            <input
+              type="file"
+              id="videoFileInput"
+              class="file-input-hidden"
+              accept="video/*,.mp4,.mkv,.mov,.avi,.webm,.mpg,.mpeg,.ts,.m2ts,.wmv,.flv,.3gp,.m4v"
+            />
+            <div class="dropzone-content">
+              <strong id="dropZonePrimary">Choose a video file or drop it here</strong>
+              <span id="dropZoneSecondary" class="muted-hint">
+                Inspected locally via MediaInfo WASM and FFmpeg stream probe
+              </span>
+            </div>
+            <button type="button" id="browseFileBtn" class="btn btn-secondary">
+              Select Video
+            </button>
+          </div>
+
+          <div id="fileRiskNotice" class="notice-stack" aria-live="polite"></div>
+        </div>
+
+        <!-- Step 2: Inspection Summary -->
+        <div id="inspectionSection" class="block" hidden>
+          <div class="block-header">
+            <h2 class="block-title">2. Media Inspection</h2>
+            <span id="inspectionSourceTag" class="mono-meta"></span>
+          </div>
+
+          <div id="inspectionSummary" class="inspect-grid"></div>
+          <div id="inspectionStreams" class="stream-list"></div>
+        </div>
+
+        <!-- Step 3: Independent Conversion Settings -->
+        <form id="settingsForm" class="block" novalidate hidden>
+          <div class="block-header">
+            <h2 class="block-title">3. Output Configuration</h2>
+            <span id="computedResolutionPreview" class="mono-meta"></span>
+          </div>
+
+          <div class="form-grid">
+            <!-- Container -->
+            <div class="field">
+              <label for="containerSelect">Output Container</label>
+              <select id="containerSelect" name="container"></select>
+            </div>
+
+            <!-- Video Codec -->
+            <div class="field">
+              <label for="videoCodecSelect">Video Codec</label>
+              <select id="videoCodecSelect" name="videoCodec"></select>
+            </div>
+
+            <!-- Rate Control -->
+            <div class="field">
+              <label for="rateControlSelect">Rate Control</label>
+              <select id="rateControlSelect" name="rateControlMode"></select>
+              <p id="rateControlHint" class="field-hint"></p>
+            </div>
+
+            <!-- CRF / Qscale / Video Bitrate -->
+            <div class="field" id="crfField">
+              <label for="crfInput" id="crfLabel">Quality (CRF)</label>
+              <div class="inline-range">
+                <input type="range" id="crfRange" min="0" max="51" step="1" />
+                <input type="number" id="crfInput" name="crf" min="0" max="51" step="1" class="input-num-sm" />
+              </div>
+              <p class="field-hint">
+                CRF targets visual quality, not a guaranteed bitrate or file size.
+              </p>
+            </div>
+
+            <div class="field" id="videoBitrateField" hidden>
+              <label for="videoBitrateInput">Video Bitrate</label>
+              <div class="input-group">
+                <input
+                  type="number"
+                  id="videoBitrateInput"
+                  name="videoBitrateValue"
+                  min="50"
+                  max="200000"
+                  step="any"
+                />
+                <select id="videoBitrateUnit" name="videoBitrateUnit" aria-label="Video bitrate unit">
+                  <option value="kbps">Kbps</option>
+                  <option value="mbps">Mbps</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Resolution -->
+            <div class="field">
+              <label for="resolutionPresetSelect">Resolution</label>
+              <select id="resolutionPresetSelect" name="resolutionPreset"></select>
+            </div>
+
+            <!-- Width & Height -->
+            <div class="field" id="customDimsField">
+              <label for="widthInput">Dimensions (Width × Height)</label>
+              <div class="dims-pair">
+                <input
+                  type="number"
+                  id="widthInput"
+                  name="customWidth"
+                  min="16"
+                  max="7680"
+                  step="2"
+                  placeholder="Width"
+                  aria-label="Output width in pixels"
+                />
+                <span class="dims-x" aria-hidden="true">×</span>
+                <input
+                  type="number"
+                  id="heightInput"
+                  name="customHeight"
+                  min="16"
+                  max="4320"
+                  step="2"
+                  placeholder="Height"
+                  aria-label="Output height in pixels"
+                />
+              </div>
+              <p class="field-hint" id="dimsHint">
+                Editing either dimension recalculates the other using effective display aspect ratio.
+              </p>
+            </div>
+
+            <!-- Aspect Ratio -->
+            <div class="field">
+              <label for="aspectRatioSelect">Aspect Ratio</label>
+              <select id="aspectRatioSelect" name="aspectRatioMode"></select>
+              <div id="customAspectWrap" class="dims-pair mt-xs" hidden>
+                <input
+                  type="number"
+                  id="customAspectW"
+                  min="1"
+                  max="100"
+                  step="any"
+                  aria-label="Custom aspect ratio width"
+                />
+                <span class="dims-x" aria-hidden="true">:</span>
+                <input
+                  type="number"
+                  id="customAspectH"
+                  min="1"
+                  max="100"
+                  step="any"
+                  aria-label="Custom aspect ratio height"
+                />
+              </div>
+            </div>
+
+            <!-- Scaling Mode -->
+            <div class="field">
+              <label for="scalingModeSelect">Scaling Mode</label>
+              <select id="scalingModeSelect" name="scalingMode"></select>
+              <p id="scalingModeHint" class="field-hint"></p>
+            </div>
+
+            <!-- Frame Rate -->
+            <div class="field">
+              <label for="fpsSelect">Frame Rate (FPS)</label>
+              <select id="fpsSelect" name="fpsMode"></select>
+              <input
+                type="number"
+                id="customFpsInput"
+                name="customFps"
+                min="1"
+                max="240"
+                step="any"
+                placeholder="e.g. 29.97"
+                class="mt-xs"
+                hidden
+                aria-label="Custom frames per second"
+              />
+            </div>
+
+            <!-- VFR Policy -->
+            <div class="field" id="vfrPolicyField">
+              <label for="vfrPolicySelect">Timing / VFR Handling</label>
+              <select id="vfrPolicySelect" name="vfrPolicy">
+                <option value="preserve">Preserve source timing (keep VFR if variable)</option>
+                <option value="cfr">Convert to Constant Frame Rate (CFR)</option>
+              </select>
+            </div>
+
+            <!-- Audio Mode -->
+            <div class="field">
+              <label for="audioModeSelect">Audio Handling</label>
+              <select id="audioModeSelect" name="audioMode">
+                <option value="encode">Re-encode audio</option>
+                <option value="copy">Preserve original audio stream</option>
+                <option value="none">Remove audio</option>
+              </select>
+            </div>
+
+            <!-- Audio Codec -->
+            <div class="field" id="audioCodecField">
+              <label for="audioCodecSelect">Audio Codec</label>
+              <select id="audioCodecSelect" name="audioCodec"></select>
+            </div>
+
+            <!-- Audio Bitrate -->
+            <div class="field" id="audioBitrateField">
+              <label for="audioBitrateInput">Audio Bitrate (Kbps)</label>
+              <div class="input-group">
+                <select id="audioBitratePresetSelect" aria-label="Audio bitrate presets"></select>
+                <input
+                  type="number"
+                  id="audioBitrateInput"
+                  name="audioBitrateKbps"
+                  min="16"
+                  max="640"
+                  step="1"
+                  aria-label="Custom audio bitrate in Kbps"
+                />
+              </div>
+            </div>
+          </div>
+
+          <!-- Advanced Encoding Settings -->
+          <details class="advanced-box" id="advancedDetails">
+            <summary class="advanced-summary">
+              Advanced Encoding Parameters
+            </summary>
+            <div class="form-grid advanced-grid">
+              <div class="field" id="presetField">
+                <label for="presetSelect">Encoding Preset / Speed</label>
+                <select id="presetSelect" name="preset"></select>
+              </div>
+
+              <div class="field" id="profileField">
+                <label for="profileSelect">Codec Profile</label>
+                <select id="profileSelect" name="profile"></select>
+              </div>
+
+              <div class="field" id="levelField">
+                <label for="levelSelect">Codec Level</label>
+                <select id="levelSelect" name="level"></select>
+              </div>
+
+              <div class="field" id="pixelFormatField">
+                <label for="pixelFormatSelect">Pixel Format</label>
+                <select id="pixelFormatSelect" name="pixelFormat"></select>
+              </div>
+
+              <div class="field" id="gopField">
+                <label for="gopInput">Keyframe Interval (GOP frames)</label>
+                <input
+                  type="number"
+                  id="gopInput"
+                  name="gopSize"
+                  min="1"
+                  max="600"
+                  step="1"
+                  placeholder="Encoder default"
+                />
+              </div>
+
+              <div class="field" id="audioSampleRateField">
+                <label for="audioSampleRateSelect">Audio Sample Rate</label>
+                <select id="audioSampleRateSelect" name="audioSampleRate"></select>
+              </div>
+
+              <div class="field" id="audioChannelsField">
+                <label for="audioChannelsSelect">Audio Channels</label>
+                <select id="audioChannelsSelect" name="audioChannels">
+                  <option value="0">Original</option>
+                  <option value="1">Mono (1.0)</option>
+                  <option value="2">Stereo (2.0)</option>
+                  <option value="6">Surround (5.1)</option>
+                </select>
+              </div>
+
+              <div class="field" id="videoStreamField">
+                <label for="videoStreamSelect">Source Video Stream</label>
+                <select id="videoStreamSelect" name="videoStreamIndex"></select>
+              </div>
+
+              <div class="field" id="audioStreamField">
+                <label for="audioStreamSelect">Source Audio Stream</label>
+                <select id="audioStreamSelect" name="audioStreamIndex"></select>
+              </div>
+
+              <div class="field" id="subtitleModeField">
+                <label for="subtitleModeSelect">Subtitle Handling</label>
+                <select id="subtitleModeSelect" name="subtitleMode">
+                  <option value="none">Exclude subtitles</option>
+                  <option value="copy">Copy compatible subtitles</option>
+                </select>
+              </div>
+
+              <div class="field" id="subtitleStreamField">
+                <label for="subtitleStreamSelect">Source Subtitle Stream</label>
+                <select id="subtitleStreamSelect" name="subtitleStreamIndex"></select>
+              </div>
+
+              <div class="field field-checkbox" id="fastStartField">
+                <label class="checkbox-label">
+                  <input type="checkbox" id="fastStartCheckbox" name="fastStart" checked />
+                  <span>Enable MP4/MOV fast-start metadata (<code>+faststart</code>)</span>
+                </label>
+              </div>
+            </div>
+          </details>
+
+          <div id="validationFeedback" class="notice-stack" aria-live="polite"></div>
+
+          <div class="form-actions">
+            <button type="submit" id="addToQueueBtn" class="btn btn-primary">
+              Add to Queue
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <!-- Right Panel: Independent Conversion Queue -->
+      <section class="panel panel-queue" aria-labelledby="queuePanelHeading">
+        <div class="panel-header">
+          <div>
+            <h2 id="queuePanelHeading" class="panel-title">Conversion Queue</h2>
+            <p id="queueStatsLine" class="panel-subtitle">
+              No jobs queued yet
+            </p>
+          </div>
+          <div class="queue-header-actions">
+            <button type="button" id="clearFinishedBtn" class="btn btn-secondary btn-sm" disabled>
+              Clear Finished
+            </button>
+            <button type="button" id="startQueueBtn" class="btn btn-primary" disabled>
+              Start Queue
+            </button>
+          </div>
+        </div>
+
+        <div id="overallProgressBox" class="overall-progress" hidden>
+          <div class="progress-label-row">
+            <span id="overallProgressLabel">Queue progress</span>
+            <span id="overallProgressPct" class="mono-meta">0%</span>
+          </div>
+          <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="overallProgressBarWrap">
+            <div class="progress-fill" id="overallProgressFill"></div>
+          </div>
+        </div>
+
+        <div id="queueEmptyState" class="empty-state">
+          <p class="empty-title">Your queue is empty</p>
+          <p class="empty-copy">
+            Select a video, verify its inspected streams, adjust its conversion settings, and click
+            <strong>Add to Queue</strong>. Each queued video retains its own independent configuration.
+          </p>
+        </div>
+
+        <ul id="queueList" class="queue-list" aria-live="polite"></ul>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="footer-inner">
+        <span>All video inspection and transcoding execute locally in WebAssembly.</span>
+        <span aria-hidden="true">·</span>
+        <span>FFmpeg.wasm + MediaInfo WASM</span>
+      </div>
+    </footer>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>
