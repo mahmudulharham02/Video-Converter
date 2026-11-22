@@ -22,10 +22,33 @@ export class QueueManager {
   #activeJobId = null;
   #ffmpegClient;
   #onChange;
+  #onDiagnostic;
 
-  constructor(ffmpegClient, onChange) {
+  constructor(ffmpegClient, onChange, onDiagnostic = null) {
     this.#ffmpegClient = ffmpegClient;
     this.#onChange = onChange;
+    this.#onDiagnostic = typeof onDiagnostic === 'function' ? onDiagnostic : null;
+  }
+
+  setDiagnosticHandler(handler) {
+    this.#onDiagnostic = typeof handler === 'function' ? handler : null;
+  }
+
+  #emit(stage, message, level = 'info') {
+    const entry = {
+      timestamp: Date.now(),
+      stage,
+      message,
+      level,
+    };
+    const logFn =
+      level === 'error' ? console.error : level === 'warn' ? console.warn : console.info;
+    logFn(`[WebFF:${stage}] ${message}`);
+    try {
+      this.#onDiagnostic?.(entry);
+    } catch {
+      // ignore diagnostic sink errors
+    }
   }
 
   get jobs() {
@@ -68,7 +91,11 @@ export class QueueManager {
   }
 
   #notify() {
-    this.#onChange?.(this.#jobs, this.getSummary());
+    try {
+      this.#onChange?.(this.#jobs, this.getSummary());
+    } catch (err) {
+      this.#emit('ui_render_error', `Queue UI render warning: ${err?.message || err}`, 'error');
+    }
   }
 
   addJob({ file, inspection, settings }) {
@@ -96,6 +123,7 @@ export class QueueManager {
     };
 
     this.#jobs.push(job);
+    this.#emit('queue_job_added', `Queued "${job.fileName}" -> ${job.outputFileName}`);
     this.#notify();
     return job;
   }
@@ -177,12 +205,23 @@ export class QueueManager {
   }
 
   async startQueue() {
-    if (this.#running) return;
-    this.#running = true;
-    this.#cancelRequested = false;
-    this.#notify();
+    if (this.#running) {
+      this.#emit('queue_already_running', 'Start Queue ignored because queue is already running.', 'warn');
+      return;
+    }
+
+    const pendingCount = this.#jobs.filter((j) => j.status === 'pending').length;
+    if (pendingCount === 0) {
+      this.#emit('queue_empty', 'Start Queue called with no pending jobs.', 'warn');
+      return;
+    }
 
     try {
+      this.#running = true;
+      this.#cancelRequested = false;
+      this.#emit('queue_started', `Queue execution started (${pendingCount} pending job${pendingCount === 1 ? '' : 's'})`);
+      this.#notify();
+
       while (!this.#cancelRequested) {
         const nextJob = this.#jobs.find((j) => j.status === 'pending');
         if (!nextJob) break;
@@ -197,6 +236,7 @@ export class QueueManager {
 
         try {
           if (!this.#ffmpegClient.isLoaded) {
+            this.#emit('job_initializing', `Initializing FFmpeg for "${nextJob.fileName}"`);
             await this.#ffmpegClient.init();
           }
 
@@ -204,10 +244,10 @@ export class QueueManager {
           const inputExt = getInputExtension(nextJob.fileName);
           const outputExt = containerSpec?.ext || '.mp4';
 
-          nextJob.phase = 'Encoding video';
+          nextJob.phase = 'Preparing input file';
           this.#notify();
 
-          const { blob, args } = await this.#ffmpegClient.transcode({
+          const { blob } = await this.#ffmpegClient.transcode({
             jobId: nextJob.id,
             file: nextJob.file,
             inputExt,
@@ -222,6 +262,12 @@ export class QueueManager {
               });
               nextJob.commandArgs = built.args;
               return built.args;
+            },
+            onStage: (_stageKey, stageLabel) => {
+              if (nextJob.status === 'processing') {
+                nextJob.phase = stageLabel;
+                this.#notify();
+              }
             },
             onProgress: ({ progress }) => {
               if (nextJob.status === 'processing') {
@@ -240,6 +286,7 @@ export class QueueManager {
 
           nextJob.phase = 'Verifying output integrity';
           nextJob.progress = 1;
+          this.#emit('verification_started', `Verifying output "${nextJob.outputFileName}" (${blob.size} bytes)`);
           this.#notify();
 
           const verification = await verifyOutput({
@@ -253,8 +300,9 @@ export class QueueManager {
           nextJob.verification = verification;
           if (!verification.passed) {
             nextJob.status = 'failed';
-            nextJob.phase = 'Output verification failed';
+            nextJob.phase = 'Verification failed';
             nextJob.error = verification.failures.join(' ');
+            this.#emit('verification_failed', `Verification failed: ${nextJob.error}`, 'error');
           } else {
             nextJob.outputUrl = URL.createObjectURL(blob);
             nextJob.outputSize = blob.size;
@@ -263,16 +311,22 @@ export class QueueManager {
               verification.status === 'warnings'
                 ? 'Completed with verification notes'
                 : 'Completed and verified';
+            this.#emit(
+              'conversion_completed',
+              `Completed "${nextJob.outputFileName}" (${blob.size} bytes)`
+            );
           }
         } catch (err) {
           if (this.#cancelRequested || err?.name === 'AbortError') {
             nextJob.status = 'cancelled';
             nextJob.phase = 'Cancelled by user';
             nextJob.error = null;
+            this.#emit('job_cancelled', `Job "${nextJob.fileName}" cancelled`);
           } else {
             nextJob.status = 'failed';
             nextJob.phase = 'Conversion failed';
             nextJob.error = err?.message || String(err);
+            this.#emit('job_failed', `Job "${nextJob.fileName}" failed: ${nextJob.error}`, 'error');
           }
         } finally {
           this.#activeJobId = null;
@@ -282,6 +336,7 @@ export class QueueManager {
     } finally {
       this.#running = false;
       this.#activeJobId = null;
+      this.#emit('queue_finished', 'Queue processing finished');
       this.#notify();
     }
   }
@@ -294,6 +349,7 @@ export class QueueManager {
       activeJob.phase = 'Terminating worker...';
       this.#notify();
     }
+    this.#emit('job_cancelling', 'Cancelling active job and terminating FFmpeg worker');
     await this.#ffmpegClient.cancelAndReset();
     if (activeJob && activeJob.status === 'processing') {
       activeJob.status = 'cancelled';

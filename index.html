@@ -441,6 +441,22 @@
         </div>
 
         <ul id="queueList" class="queue-list" aria-live="polite"></ul>
+
+        <details id="diagnosticsBox" class="diagnostics-box">
+          <summary class="diagnostics-summary">
+            <span>Engine &amp; Queue Diagnostics</span>
+            <span id="diagnosticsSummary" class="mono-meta">Initializing…</span>
+          </summary>
+          <div class="diagnostics-body">
+            <div class="diagnostics-toolbar">
+              <span class="muted-hint">Lifecycle trace for worker loading, WASM, queue dispatch, and encoding</span>
+              <button type="button" id="copyDiagnosticsBtn" class="btn btn-secondary btn-sm">
+                Copy Log
+              </button>
+            </div>
+            <ul id="diagnosticsLog" class="diagnostics-log"></ul>
+          </div>
+        </details>
       </section>
     </main>
 

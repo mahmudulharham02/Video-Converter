@@ -26,6 +26,37 @@ export function detectBrowserCapabilities() {
       ? navigator.deviceMemory
       : null;
 
+  const ua = typeof navigator !== 'undefined' ? String(navigator.userAgent || '') : '';
+  const coarsePointer =
+    typeof globalThis.matchMedia === 'function' &&
+    globalThis.matchMedia('(pointer: coarse)').matches;
+  const maxTouchPoints =
+    typeof navigator !== 'undefined' && typeof navigator.maxTouchPoints === 'number'
+      ? navigator.maxTouchPoints
+      : 0;
+  const isMobile = Boolean(
+    /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(ua) ||
+      (coarsePointer && maxTouchPoints > 1)
+  );
+  const lowMemory = deviceMemoryGb !== null && deviceMemoryGb < 4;
+  const lowConcurrency = hardwareConcurrency !== null && hardwareConcurrency < 2;
+
+  let multithreadSkipReason = null;
+  if (canMultithread) {
+    if (isMobile) {
+      multithreadSkipReason =
+        'Mobile browser detected; using reliable single-thread WebAssembly baseline (avoids 1 GB SharedArrayBuffer multithread allocation).';
+    } else if (lowMemory) {
+      multithreadSkipReason =
+        `Low reported device memory (${deviceMemoryGb} GB); using reliable single-thread WebAssembly baseline.`;
+    } else if (lowConcurrency) {
+      multithreadSkipReason =
+        'Single-core CPU reported; using single-thread WebAssembly baseline.';
+    }
+  }
+
+  const safeMultithread = Boolean(canMultithread && !multithreadSkipReason);
+
   const warnings = [];
   if (!webAssembly) {
     warnings.push('WebAssembly is unavailable in this browser. Video conversion cannot run.');
@@ -37,6 +68,8 @@ export function detectBrowserCapabilities() {
     warnings.push(
       'Cross-origin isolation (COOP/COEP) or SharedArrayBuffer is inactive; running in reliable single-thread WebAssembly mode.'
     );
+  } else if (multithreadSkipReason) {
+    warnings.push(multithreadSkipReason);
   }
 
   return {
@@ -45,6 +78,9 @@ export function detectBrowserCapabilities() {
     sharedArrayBuffer,
     crossOriginIsolated,
     canMultithread,
+    safeMultithread,
+    multithreadSkipReason,
+    isMobile,
     hardwareConcurrency,
     deviceMemoryGb,
     warnings,

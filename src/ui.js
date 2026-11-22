@@ -95,6 +95,7 @@ export class ConverterUI {
   #draftSettings = null;
   #lastQueuedSettings = null;
   #editingJobId = null;
+  #diagnosticEntries = [];
 
   #dom = {};
 
@@ -195,6 +196,11 @@ export class ConverterUI {
       'overallProgressFill',
       'queueEmptyState',
       'queueList',
+      'diagnosticsBox',
+      'diagnosticsSummary',
+      'copyDiagnosticsBtn',
+      'diagnosticsLog',
+      'queuePanelHeading',
     ];
     for (const id of ids) {
       this.#dom[id] = document.getElementById(id);
@@ -202,12 +208,21 @@ export class ConverterUI {
   }
 
   #initTheme() {
-    const saved = localStorage.getItem('webff_theme') || 'system';
+    let saved = 'system';
+    try {
+      saved = localStorage.getItem('webff_theme') || 'system';
+    } catch {
+      // ignore storage access errors
+    }
     this.#dom.themeSelect.value = saved;
     this.#applyTheme(saved);
     this.#dom.themeSelect.addEventListener('change', (e) => {
       const val = e.target.value;
-      localStorage.setItem('webff_theme', val);
+      try {
+        localStorage.setItem('webff_theme', val);
+      } catch {
+        // ignore storage access errors
+      }
       this.#applyTheme(val);
     });
   }
@@ -217,6 +232,50 @@ export class ConverterUI {
       document.documentElement.setAttribute('data-theme', mode);
     } else {
       document.documentElement.removeAttribute('data-theme');
+    }
+  }
+
+  addDiagnostic(entry) {
+    if (!entry) return;
+    const d = this.#dom;
+    const date = new Date(entry.timestamp || Date.now());
+    const hh = String(date.getHours()).padStart(2, '0');
+    const mm = String(date.getMinutes()).padStart(2, '0');
+    const ss = String(date.getSeconds()).padStart(2, '0');
+    const line = `[${hh}:${mm}:${ss}] [${entry.stage || 'info'}] ${entry.message}`;
+
+    this.#diagnosticEntries.push({ ...entry, line });
+    if (this.#diagnosticEntries.length > 60) {
+      this.#diagnosticEntries.shift();
+    }
+
+    if (d.diagnosticsSummary) {
+      const mode = this.#ffmpegClient.activeMode || 'unloaded';
+      const iso = globalThis.crossOriginIsolated ? 'COI' : 'no-COI';
+      d.diagnosticsSummary.textContent = `${mode} · ${iso} · ${entry.stage}`;
+      d.diagnosticsSummary.style.color =
+        entry.level === 'error'
+          ? 'var(--danger)'
+          : entry.level === 'warn'
+            ? 'var(--warning)'
+            : '';
+    }
+
+    if (entry.level === 'error' && d.diagnosticsBox) {
+      d.diagnosticsBox.open = true;
+    }
+
+    if (d.diagnosticsLog) {
+      const li = el(
+        'li',
+        `diag-entry${entry.level === 'error' ? ' diag-error' : entry.level === 'warn' ? ' diag-warn' : ''}`,
+        line
+      );
+      d.diagnosticsLog.appendChild(li);
+      while (d.diagnosticsLog.children.length > 60) {
+        d.diagnosticsLog.firstElementChild?.remove();
+      }
+      d.diagnosticsLog.scrollTop = d.diagnosticsLog.scrollHeight;
     }
   }
 
@@ -244,6 +303,17 @@ export class ConverterUI {
       return;
     }
 
+    if (caps.initializing && !caps.activeMode) {
+      this.setEngineStatus('Initializing WebAssembly engine…');
+      if (!caps.crossOriginIsolated || !caps.sharedArrayBuffer || caps.multithreadSkipReason) {
+        const msg =
+          caps.multithreadSkipReason ||
+          'Cross-origin isolation (COOP/COEP) or SharedArrayBuffer is inactive; using single-thread baseline.';
+        stack.appendChild(el('div', 'notice notice-info', msg));
+      }
+      return;
+    }
+
     const modeLabel =
       caps.activeMode === 'multi'
         ? `Multithread WASM (${caps.hardwareConcurrency || '?'} threads)`
@@ -255,6 +325,7 @@ export class ConverterUI {
     if (caps.activeMode !== 'multi') {
       const msg =
         caps.fallbackReason ||
+        caps.multithreadSkipReason ||
         'SharedArrayBuffer / cross-origin isolation is unavailable; running single-thread baseline.';
       stack.appendChild(el('div', 'notice notice-info', msg));
     }
@@ -582,15 +653,56 @@ export class ConverterUI {
         });
         const addedName = this.#currentFile.name;
         this.#clearCurrentWorkbench(`Added "${addedName}" to queue. Select another video to configure independently.`);
+        if (window.innerWidth <= 1024 && d.queuePanelHeading) {
+          d.queuePanelHeading.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
       }
     });
 
     // Queue Header Controls
     d.startQueueBtn.addEventListener('click', () => {
-      this.#queueManager.startQueue();
+      this.addDiagnostic({
+        timestamp: Date.now(),
+        stage: 'queue_button_clicked',
+        message: 'Start Queue button triggered by user',
+        level: 'info',
+      });
+      this.#queueManager
+        .startQueue()
+        .then(() => {
+          if (this.#ffmpegClient.isLoaded) {
+            this.setCapabilities(this.#ffmpegClient.getCapabilitiesSnapshot());
+          }
+        })
+        .catch((err) => {
+          const msg = `Queue failed to start: ${err?.message || err}`;
+          this.addDiagnostic({
+            timestamp: Date.now(),
+            stage: 'queue_dispatch_error',
+            message: msg,
+            level: 'error',
+          });
+          this.setEngineStatus(msg, true);
+        });
     });
+
     d.clearFinishedBtn.addEventListener('click', () => {
       this.#queueManager.clearFinished();
+    });
+
+    d.copyDiagnosticsBtn?.addEventListener('click', async () => {
+      const text = this.#diagnosticEntries.map((e) => e.line).join('\n');
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+        const prev = d.copyDiagnosticsBtn.textContent;
+        d.copyDiagnosticsBtn.textContent = 'Copied';
+        setTimeout(() => {
+          d.copyDiagnosticsBtn.textContent = prev;
+        }, 1500);
+      } catch {
+        // fallback ignored in non-clipboard contexts
+      }
     });
   }
 
@@ -620,8 +732,15 @@ export class ConverterUI {
         try {
           const caps = await this.#ffmpegClient.init();
           this.setCapabilities(caps);
-        } catch {
-          // Proceed with MediaInfo-only inspection if FFmpeg init failed
+        } catch (initErr) {
+          const initMsg = `FFmpeg engine unavailable during file inspection (${initErr?.message || initErr}). MediaInfo inspection will continue; engine initialization will retry when starting conversion.`;
+          this.addDiagnostic({
+            timestamp: Date.now(),
+            stage: 'ffmpeg_init_warning',
+            message: initMsg,
+            level: 'warn',
+          });
+          this.#dom.fileRiskNotice.appendChild(el('div', 'notice notice-warning', initMsg));
         }
       }
 
